@@ -12,9 +12,9 @@ module.exports = {
     deferred: function() {
         let resolve;
         let reject;
-        let promise = new Promise((resolve, reject) => {
-            resolve = resolve;
-            reject = reject;
+        let promise = new Promise((_resolve, _reject) => {
+            resolve = _resolve;
+            reject = _reject;
         });
 
         return {
