@@ -1,13 +1,9 @@
 class Promise {
     static state = {
-        PENDING: 'PENDING',
-        FULFILLED: 'FULFILLED',
-        REJECTED: 'REJECTED'
+        PENDING: 'pending',
+        FULFILLED: 'fulfilled',
+        REJECTED: 'rejected'
     };
-
-    static defer(fn, ms = 0) {
-        setTimeout(fn, ms);
-    }
 
     static resolve(value) {
         return new Promise(resolve => resolve(value));
@@ -18,169 +14,175 @@ class Promise {
     }
 
     static all(promises) {
-        return new Promise((resolve, reject) => {
-            const results = [];
+        var index = 0,
+            promiseCount = promises.length;
 
-            promises.forEach((promise, index) => {
-                promise.then(result => {
-                    results[index] = result;
-    
-                    if (results.length === promises.length) {
-                        resolve(results);
-                    }
-                }, reject);
-            });
-        });
-    }
+        return new Promise(function (fulfill, reject) {
+            var promise,
+                results = [],
+                resultsCount = 0;
 
-    static race(promises) {
-        return new Promise((resolve, reject) => {
-            let done;
+            function onSuccess(result, index) {
+                results[index] = result;
+                resultsCount++;
 
-            promises.forEach(promise => {
-                promise.then(result => {
-                    if (!done) {
-                        done = true;
-                        resolve(result);
-                    }
-                }, reject);
-            });
+                if (resultsCount === promiseCount) {
+                    fulfill(results);
+                }
+            }
+
+            function onError(error) {
+                reject(error);
+            }
+            
+            function resolvePromise(index, promise) {
+                promise.then(function (value) {
+                    onSuccess(value, index);
+                }, onError);
+            }
+
+            for (; index < promiseCount; index++) {
+                promise = promises[index];
+                resolvePromise(index, promise);
+            }
         });
     }
 
     constructor(execute) {
-        if (typeof this !== 'object') {
-            throw new TypeError('Promises must be constructed via new');
-        }
-
         this.state = Promise.state.PENDING;
-        this.result = null;
-        this.reason = null;
-        this.onFulfilled = [];
-        this.onRejected = [];
+        this.value = null;
+        this.error = null;
+        this.callbacks = [];
 
-        if (typeof execute !== 'function') {
-            throw new TypeError('Promise constructor\'s argument is not a function');
-        }
-
-        try {
-            execute(this._resolve.bind(this), this._reject.bind(this));
-        } catch (error) {
-            this._reject(error);
+        if (typeof execute === 'function') {
+            execute(this.resolve.bind(this), this.reject.bind(this));
         }
     }
 
     then(onFulfilled, onRejected) {
-        return new Promise((resolve, reject) => {
-            function _onFulfilled(result) {
-                if (typeof onFulfilled === 'function') {
-                    try {
-                        resolve(onFulfilled(result));
-                    } catch (error) {
-                        reject(error);
-                    }
-                } else {
-                    resolve(result);
-                }
-            }
+        const promise = new Promise();
+        const callback = {
+            promise
+        };
 
-            function _onRejected(reason) {
-                if (typeof onRejected === 'function') {
-                    try {
-                        resolve(onRejected(reason));
-                    } catch (error) {
-                        reject(error);
-                    }
-                } else {
-                    reject(reason);
-                }
-            }
-            
-            if (this.state === Promise.state.PENDING) {
-                this.onFulfilled.push(_onFulfilled);
-                this.onRejected.push(_onRejected);
-            } else if (this.state === Promise.state.FULFILLED) {
-                Promise.defer(() => _onFulfilled(this.result));
-            } else if (this.state === Promise.state.REJECTED) {
-                Promise.defer(() => _onRejected(this.reason));
-            }
-        });
+        if (typeof onFulfilled === 'function') {
+            callback.fulfill = onFulfilled;
+        }
+
+        if (typeof onRejected === 'function') {
+            callback.reject = onRejected;
+        }
+
+        this.callbacks.push(callback);
+
+        this.executeCallbacks();
+
+        return promise;
     }
 
-    catch(onRejected) {
-        return this.then(null, onRejected);
+    executeCallbacks() {
+        function fulfill(value) {
+            return value;
+        }
+
+        function reject(reason) {
+            throw reason;
+        }
+
+        if (this.state !== Promise.state.PENDING) {
+            let value;
+
+            setTimeout(() => {
+                while (this.callbacks.length) {
+                    const callback = this.callbacks.shift();
+
+                    try {
+                        if (this.state === Promise.state.FULFILLED) {
+                            value = (callback.fulfill || fulfill)(this.value);
+                        } else {
+                            value = (callback.reject || reject)(this.error);
+                        }
+
+                        callback.promise.resolve(value);
+                    } catch (reason) {
+                        callback.promise.reject(reason);
+                    }
+                }
+            }, 0);
+        }
     }
 
-    _resolve(value) {
-        const isPromise = value instanceof Promise;
-        const isObjectOrFunction =
-            (value !== null && value !== undefined) &&
-            (typeof value === 'object' || typeof value === 'function');
+    fulfill(value) {
+        if (this.state === Promise.state.PENDING && arguments.length) {
+            this.state = Promise.state.FULFILLED;
+            this.value = value;
 
-        if (this === value) {
-            this._reject(new TypeError());
-        } else if (isPromise) {
+            this.executeCallbacks();
+        }
+    }
+
+    reject(reason) {
+        if (this.state === Promise.state.PENDING && arguments.length) {
+            this.state = Promise.state.REJECTED;
+            this.error = reason;
+
+            this.executeCallbacks();
+        }
+    }
+
+    resolve(value) {
+        const valueIsThisPromise = this === value;
+        const valueIsAPromise = value && value.constructor === Promise;
+        const valueIsThenable = value && (typeof value === 'object' || typeof value === 'function');
+        let isExecuted = false;
+        let then;
+
+        if (valueIsThisPromise) {
+            this.reject(new TypeError());
+        } else if (valueIsAPromise) {
             if (value.state === Promise.state.FULFILLED) {
-                this._fulfill(value.result);
+                this.fulfill(value.value);
             } else if (value.state === Promise.state.REJECTED) {
-                this._reject(value.reason);
-            } else if (value.state === Promise.state.PENDING) {
+                this.reject(value.error);
+            } else {
                 value.then(
-                    value => this._resolve(value),
-                    reason => this._reject(reason)
+                    value => this.resolve(value),
+                    reason => this.reject(reason)
                 );
             }
-        } else if (isObjectOrFunction) {
-            let isDone = false;
-            let then;
-
+        } else if (valueIsThenable) {
             try {
                 then = value.then;
-
+                
                 if (typeof then === 'function') {
                     then.call(value,
-                        result => {
-                            if (!isDone) {
-                                isDone = true;
-                                this._resolve(result);
+                        successValue => {
+                            if (!isExecuted) {
+                                isExecuted = true;
+                                this.resolve(successValue);
                             }
-                        },
-                        reason => {
-                            if (!isDone) {
-                                isDone = true;
-                                this._reject(reason);
+                        }, reason => {
+                            if (!isExecuted) {
+                                isExecuted = true;
+                                this.reject(reason);
                             }
                         }
                     );
                 } else {
-                    this._fulfill(value);
+                    this.fulfill(value);
                 }
             } catch (reason) {
-                if (!isDone) {
-                    isDone = true;
-                    this._reject(reason);
+                if (!isExecuted) {
+                    isExecuted = true;
+                    this.reject(reason);
                 }
             }
         } else {
-            this._fulfill(value);
-        }
-    }
-
-    _fulfill(result) {
-        if (this.state === Promise.state.PENDING) {
-            this.state = Promise.state.FULFILLED;
-            this.result = result;
-            Promise.defer(() => this.onFulfilled.forEach(callback => callback(this.result)));
-        }
-    }
-
-    _reject(reason) {
-        if (this.state === Promise.state.PENDING) {
-            this.state = Promise.state.REJECTED;
-            this.reason = reason;
-            Promise.defer(() => this.onRejected.forEach(callback => callback(this.reason)));
+            this.fulfill(value);
         }
     }
 }
 
-module.exports = Promise;
+if (typeof module === 'object' && module.exports) {
+    module.exports = Promise;
+}
